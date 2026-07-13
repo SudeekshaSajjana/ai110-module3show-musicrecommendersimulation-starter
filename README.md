@@ -29,6 +29,42 @@ Some prompts to answer:
 
 You can include a simple diagram or bullet list if helpful.
 
+Streaming platforms like Spotify and YouTube predict recommendations by blending the use of matching users to similar users' behavior with matching songs to a user's stated preferences based on the songs' own attributes, plus contextual signals. The data involved falls into user data (UserProfile: favorite genre/mood, target energy, acoustic preference), item data (Song: categorical fields like genre/mood/artist and continuous fields like energy/tempo/valence/danceability/acousticness), and derived data (scores, rankings, explanations). songs.csv shows that energy and acousticness are the most discriminative continuous features, while genre/mood are too sparse across only 10 songs to use as hard filters. For numeric features like energy, the right scoring approach is a closeness-based formula (1 - abs(song.value - user.target)) rather than "higher is better," since it rewards proximity to the user's target in both directions. Finally, the system needs two distinct pieces: a scoring rule (score_song) that judges one song against one user in isolation, and a ranking rule (recommend_songs/Recommender.recommend) that operates on the whole scored list to sort, cut to top-k, break ties, and apply any list-level policy — keeping these separate makes each independently testable and reusable.
+
+### Planned data flow
+
+```
+INPUT                              PROCESS (loop once per song)                    OUTPUT
+─────                              ─────────────────────────────                   ──────
+user_prefs dict                    for song in songs:                              sorted list, sliced to top k
+{genre, mood, energy}         ┌──▶     score, reasons = score_song(user_prefs, song)         │
+                               │            │                                       recommend_songs()
+songs: List[Dict]             │            ├─ genre == song["genre"]?  +2.0         returns
+  ← load_songs(csv_path)      │            │     → reasons.append("genre match")   [(song, score, explanation), ...]
+                               │            │
+                               │            ├─ mood == song["mood"]?    +1.0
+                               │            │     → reasons.append("mood match")
+                               │            │
+                               │            ├─ energy closeness:
+                               │            │     (1 - abs(song["energy"] - user energy)) * weight
+                               │            │     → reasons.append(f"energy close ({song['energy']})")
+                               │            │
+                               │            └─ score_song returns (score, reasons)
+                               │
+                               └──▶     scored.append((song, score, reasons))
+                                    (repeat for all rows in songs.csv)
+
+scored  →  sort by score, descending  →  take first k  →  build explanation string from reasons  →  return
+```
+
+`score_song` only ever looks at one song plus the user's preferences — it has no idea about rank, ties, or k, which keeps it testable on a single song. `recommend_songs` (or `Recommender.recommend`) owns the loop, the sort, the top-k cut, and turning `reasons` into a human-readable explanation.
+
+### Planned scoring recipe
+
+- **Genre match: +2.0** — genre is treated as a stable identity preference, so getting it right (or wrong) matters most.
+- **Mood match: +1.0** — mood is more situational/mutable than genre, so it should tip close calls rather than dominate.
+- **Energy closeness: `(1 - abs(song.energy - user.target_energy)) * 1.5`** — scaled up so a strong energy fit can meaningfully compete with a genre or mood match, since raw closeness on this catalog (energy 0.28–0.97) tends to cluster around 0.5–0.85 rather than the extremes.
+
 ---
 
 ## Getting Started
@@ -71,12 +107,30 @@ You can add more tests in `tests/test_recommender.py`.
 Paste a sample of your recommender's output here as a text block so a reader can see what it produces:
 
 ```
-# e.g.:
-# User profile: genre=indie, mood=chill, energy=low
-# Recommendations:
-#   1. ...
-#   2. ...
-#   3. ...
+Loaded songs: 18
+
+Top Recommendations
+========================================
+1. Sunrise City (Neon Echo)
+   Score:   4.47
+   Because: genre matches (pop), mood matches (happy), energy close to target (0.82 vs 0.8)
+----------------------------------------
+2. Gym Hero (Max Pulse)
+   Score:   3.30
+   Because: genre matches (pop), energy close to target (0.93 vs 0.8)
+----------------------------------------
+3. Rooftop Lights (Indigo Parade)
+   Score:   2.44
+   Because: mood matches (happy), energy close to target (0.76 vs 0.8)
+----------------------------------------
+4. Night Drive Loop (Neon Echo)
+   Score:   1.42
+   Because: energy close to target (0.75 vs 0.8)
+----------------------------------------
+5. Neon Pulse Rave (Circuit Bloom)
+   Score:   1.38
+   Because: energy close to target (0.88 vs 0.8)
+----------------------------------------
 ```
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or demo video link here -->
